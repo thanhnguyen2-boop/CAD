@@ -1,0 +1,231 @@
+# Quy Trình Tái Cấu Trúc Bản Vẽ CAD 2D Thành Mô Hình 3D Tham Số (Hệ Thống Máy Nghiền Bi)
+## Thiết Kế Kiến Trúc Hệ Thống Cho Việc Tái Tạo Thiết Bị Công Nghiệp
+**Tác giả**: Senior AI Engineer
+**Đối tượng mục tiêu**: Máy nghiền bi (Ball Mill - Bản vẽ A①ボールミル図面.pdf)
+
+---
+
+## 1. Phân Tích Thử Thách & Lựa Chọn Phương Pháp Tiếp Cận
+
+Tái cấu trúc một hệ thống cơ khí phức tạp như **Máy nghiền bi (Ball Mill)** từ các bản vẽ kỹ thuật 2D (bản thiết kế/PDF) là một nhiệm vụ cực kỳ thách thức trong lĩnh vực AI công nghiệp. Các mô hình tạo ảnh 3D tiêu chuẩn (như Shap-E, LGM, Point-E, NeRF, 3DGS) hoàn toàn **không phù hợp** cho mục đích này.
+
+### Tại sao các phương pháp tạo Mesh AI thông thường lại thất bại:
+1. **Độ chính xác & Dung sai (Precision & Tolerances)**: Các linh kiện kỹ thuật yêu cầu độ chính xác dưới một milimét, căn chỉnh đồng tâm hoàn hảo và các bước ren cụ thể. Các lưới đa giác tĩnh (mesh dạng STL/OBJ) được tạo ra bởi mạng nơ-ron không thể chỉnh sửa trong các phần mềm CAD chuyên dụng (SolidWorks, Inventor, FreeCAD) và không thể đưa vào sản xuất/gia công.
+2. **Cấu trúc bên trong (Internal Structures)**: Máy nghiền bi chứa các cấu trúc bên trong rất phức tạp (tấm lót - liners, thanh nâng - lifting bars, khoang trống bên trong, ngõng trục rỗng - hollow trunnions và khớp nối mặt bích) vốn bị ẩn trong các hình chiếu 3D bên ngoài thông thường nhưng lại được chi tiết hóa hoàn toàn trong các hình chiếu mặt cắt 2D (Mặt cắt $A-A$, $B-B$).
+3. **Tính chất tham số (Parametric Nature)**: Các bộ phận cơ khí về cơ bản được cấu thành từ các đặc tính tham số: hình trụ, vỏ xoay, đùn (extrusions), xoay tròn (revolves), mảng nhân bản (patterns - ví dụ: mảng lỗ bu lông tròn trên mặt bích) và các chi tiết tiêu chuẩn (bu lông, then, vòng bi).
+
+### Phương Pháp Được Lựa Chọn: Tái Cấu Trúc CAD Tham Số Dạng Vòng Lặp Phản Hồi Tự Sửa Lỗi (Hybrid Closed-Loop Agentic CAD Reconstruction)
+Chúng tôi đề xuất một **Pipeline kết hợp (Hybrid Pipeline)** giữa **Thị giác máy tính (CV/OCR)**, **AI Agent tạo sinh (LLM/LMM)** và **Nhân CAD tham số (FreeCAD/CadQuery)** trong một **kiến trúc phản hồi khép kín (closed-loop)**.
+
+Thay vì tạo ra một lưới 3D tĩnh, hệ thống sẽ **tổng hợp ra một đoạn mã Python tham số (sử dụng CadQuery hoặc FreeCAD API)**. Đoạn mã này sau đó được thực thi để tạo ra một vật thể hình học chuẩn **B-Rep (Boundary Representation) chính xác cao (định dạng STEP/IGES)**, sau đó được chiếu ngược lại thành 2D để đối chiếu và xác thực với bản vẽ gốc thông qua so sánh trực quan (visual diffing).
+
+---
+
+## 2. Kiến Trúc Hệ Thống Tổng Quan
+
+Sơ đồ dưới đây mô tả chi tiết quy trình khép kín này. Hệ thống tiếp nhận bản vẽ kỹ thuật 2D dạng PDF, trích xuất các đặc trưng ngữ nghĩa, tạo ra chương trình mã hóa CAD, biên dịch sang 3D và tinh chỉnh kích thước lặp đi lặp lại bằng cách sử dụng **vòng lặp phản hồi** tận dụng mã nguồn chiếu 3D sang 2D (tương tự như script `step_to_2d_pdf.py` hiện tại của bạn).
+
+```mermaid
+graph TD
+    %% Input
+    A[A①ボールミル図面.pdf] --> B[Module 1: Xử lý Tài liệu & Vector hóa]
+    
+    %% Module 1
+    subgraph M1 [Module 1: Phân đoạn & Trích xuất Thông tin]
+        B --> B1[Bộ Tách Hình ảnh / Vector]
+        B1 --> B2[Phân đoạn Góc chiếu: Hình chiếu đứng, hình chiếu bằng, Mặt cắt A-A, Chi tiết]
+        B1 --> B3[Trình Đọc OCR & Phân tích Kích thước: Định vị đường kích thước, nhãn, đường kính, dung sai]
+        B2 --> B4[Bộ Vector hóa Hình học: Trích xuất các nét vẽ thẳng, cung tròn, nét đứt]
+    end
+    
+    %% Module 2
+    subgraph M2 [Module 2: Căn chỉnh Không gian 3D & Lập kế hoạch Lắp ráp]
+        B4 & B3 --> C[Bộ Căn chỉnh Góc chiếu Trực giao: Bản đồ hóa tọa độ x,y,z]
+        C --> C1[Nhận diện Đặc tính CAD: Trục xoay, Đùn khối, Mảng bu lông, Tấm lót]
+        C1 --> C2[Sơ đồ Lắp ráp Tham số: Cây lắp ráp / Đồ thị CSG]
+    end
+
+    %% Module 3
+    subgraph M3 [Module 3: AI CAD Agent & Tổng hợp Mã nguồn]
+        C2 --> D[Kỹ sư Prompt & CAD Agent]
+        D --> D1[Trình Tạo Mã LMM/Code LLM]
+        D1 --> D2[Mã Nguồn CAD Mục tiêu: CadQuery / FreeCAD Python]
+    end
+
+    %% Module 4
+    subgraph M4 [Module 4: Thực thi & Vòng lặp Kiểm tra Phản hồi]
+        D2 --> E[Nhân Biên dịch CAD: FreeCAD/OpenCascade]
+        E --> E1[Vật thể 3D Hoàn chỉnh: STEP/IGES]
+        
+        %% FEEDBACK LOOP
+        E1 --> F[Nhân Chiếu 3D sang 2D: Tạo ảnh TechDraw / SVG]
+        F --> F1[Góc chiếu 2D kết quả: Đứng, Bằng, Mặt cắt]
+        F1 --> G[Bộ So sánh Hình ảnh & Ngữ nghĩa: So khớp Edge IoU, Chamfer Distance, Kiểm tra Kích thước]
+        G -->|Sai số ngoài phạm vi cho phép| H[Trình Sửa lỗi Agent & Tối ưu hóa Tham số]
+        H -->|Tinh chỉnh Mã nguồn & Tham số| D1
+        G -->|Đạt chuẩn Dung sai | I[Kết quả Đầu ra: File STEP Tham số & Cây Lắp ráp]
+    end
+```
+
+---
+
+## 3. Chi Tiết Các Module Chính
+
+### Module 1: Xử Lý Tài Liệu, OCR & Phân Tích Kích Thước
+Bản vẽ gốc chứa một lượng thông tin ngữ nghĩa khổng lồ (văn bản, ký hiệu vẽ kỹ thuật, nét đứt thể hiện phần khuất, các ký hiệu mặt cắt).
+1. **Phát hiện & Phân loại Vùng hình chiếu (Viewport Detection & Classification)**:
+   - **Mô hình**: Sử dụng **YOLOv10 / Faster R-CNN** được huấn luyện riêng trên tập dữ liệu bản vẽ kỹ thuật cơ khí để phân đoạn từng góc nhìn (ví dụ: hình chiếu đứng tổng thể, mặt cắt ngõng trục, mặt cắt thân máy nghiền).
+   - **Kết quả**: Các hộp bao (bounding boxes) được gắn nhãn tương ứng: `[Front_View, Top_View, Section_A-A, Detail_B]`.
+2. **Trích xuất & Liên kết Kích thước (Dimension Extraction & Association)**:
+   - **Mô hình**: **PaddleOCR** hoặc **TrOCR (Transformer OCR)** được tinh chỉnh trên phông chữ vẽ kỹ thuật công nghiệp và các ký hiệu kỹ thuật đặc biệt (như $\varnothing$ cho đường kính, $M$ cho ren hệ mét, $\degree$ cho góc).
+   - **Liên kết đường nét (Heuristic CV)**: Sử dụng thuật toán **Hough Line Transform** và **Line Segment Detection (LSD)** để dò theo các đường gióng kích thước và đường chỉ dẫn kết nối giá trị số với các cạnh hình học tương ứng.
+   - **Kết quả**: Biểu diễn dạng JSON cấu trúc của các kích thước:
+     ```json
+     {
+       "feature_id": "cylinder_shell",
+       "outer_diameter": {"val": 1200.0, "tolerance": [0.5, -0.2], "unit": "mm"},
+       "length": {"val": 2500.0, "tolerance": [1.0, -1.0], "unit": "mm"}
+     }
+     ```
+
+### Module 2: Vector Hóa Hình Học (Từ Ảnh Điểm Sang Đối Tượng CAD)
+Các bản vẽ kỹ thuật trong tệp PDF thường ở dạng ảnh quét (raster) độ phân giải cao. Chúng ta cần chuyển đổi chúng sang các đường vector có cấu trúc toán học để xác định hình học chính xác.
+1. **Phân tách các lớp vẽ (Layer Separation)**:
+   - Sử dụng các mạng nơ-ron tích chập (CNN) hoặc các bộ lọc hình thái học cổ điển để chia hình ảnh thành 3 lớp riêng biệt:
+     - **Lớp Kích thước & Văn bản**: (Các chữ số, đường kích thước có mũi tên, đường tâm).
+     - **Lớp Nét liền (Solid Outline)**: (Biên dạng ngoài nhìn thấy được của vật thể).
+     - **Lớp Nét đứt (Hidden Outline)**: (Các nét vẽ khuất thể hiện khoang rỗng bên trong, buồng nghiền và lỗ bu lông bắt tấm lót).
+2. **Khớp các thực thể hình học (Primitives Fitting)**:
+   - Sử dụng thuật toán **RANSAC** và khớp đường cong spline để chuyển đổi bản đồ pixel của nét vẽ liền thành các thực thể vector chuẩn: đoạn thẳng, cung tròn, đường tròn và đường B-spline.
+   - Kết quả xuất ra được định dạng dưới dạng các tệp **DXF (Drawing Exchange Format)** được chuẩn hóa.
+
+### Module 3: Căn Chỉnh Không Gian 3D & Bản Đồ Hóa Đặc Tính (Logic Cốt Lõi)
+Máy nghiền bi là một **cấu trúc đối xứng xoay**. Đây là một lợi thế cấu trúc cực kỳ lớn:
+- **Phát hiện Trục Xoay (Rotational Axis Detection)**: Trong bất kỳ góc nhìn nào, tìm trục đối xứng chính (được biểu diễn bằng các nét gạch chấm mảnh).
+- **Trích xuất Biên dạng (Profile Generation)**: Trong các hình chiếu mặt cắt (ví dụ Mặt cắt $A-A$), trích xuất biên dạng thành ngoài và thành trong của vỏ máy nghiền, ngõng trục và các mặt bích đầu trục.
+- **Ánh xạ tham số (Parametric Mapping)**:
+  - Thân tang nghiền chính $\rightarrow$ Phép xoay tròn (Revolve) của một biên dạng 2D quanh trục trung tâm.
+  - Các mặt bích đầu trục $\rightarrow$ Phép đùn dày (Extrude) các cạnh của vỏ + mảng lỗ bu lông phân bố tròn.
+  - Các tấm lót (linings) $\rightarrow$ Mảng nhân bản tuyến tính hoặc vòng tròn (Linear/Circular Patterns) của các lăng trụ hình thang đùn khối phía bên trong thân vỏ chính.
+
+### Module 4: AI CAD Agent (Tổng Hợp Mã Nguồn Tham Số)
+Thay vì xây dựng một hệ thống thuật toán cứng nhắc dựa trên luật (rule-based) vốn rất dễ bị lỗi khi gặp các hình dạng phức tạp, chúng tôi áp dụng một **AI Agent dựa trên Mô hình Đa phương thức Lớn (LMM Agent)** đóng vai trò như một kỹ sư CAD chuyên nghiệp.
+- **Đầu vào của Agent**:
+  - Các biên dạng vector đã trích xuất (ở định dạng SVG/DXF).
+  - Cấu trúc JSON của các kích thước và dung sai từ Module OCR.
+  - Kiến thức chuyên môn về API lập trình CAD (ví dụ: tài liệu hướng dẫn CadQuery hoặc FreeCAD Python API).
+- **Đầu ra của Agent**: Một đoạn mã Python sử dụng thư viện **CadQuery** (một thư viện lập trình CAD tham số cực kỳ mạnh mẽ chạy trên nền nhân OpenCascade).
+
+#### Tại sao CadQuery lại hoàn hảo cho việc này:
+CadQuery sử dụng các API lập trình hướng đối tượng, dễ đọc và mô phỏng chính xác quá trình gia công thực tế (ví dụ: tạo hộp `box()`, tạo hình trụ `cylinder()`, chọn bề mặt `faces()`, khoan lỗ `hole()`, xoay tròn `revolve()`). Dưới đây là một ví dụ mã nguồn do AI Agent tự động tạo ra để dựng phần thân chính của Máy nghiền bi:
+
+```python
+import cadquery as cq
+
+# Các tham số được trích xuất tự động từ công cụ OCR bản vẽ
+SHELL_OD = 1200.0        # Đường kính ngoài thân vỏ
+SHELL_ID = 1120.0        # Đường kính trong thân vỏ
+SHELL_LEN = 2500.0       # Chiều dài thân vỏ
+FLANGE_OD = 1400.0       # Đường kính ngoài mặt bích
+FLANGE_THICK = 50.0      # Độ dày mặt bích
+BOLT_CIRCLE_D = 1320.0   # Đường kính vòng chia bu lông
+NUM_BOLTS = 24           # Số lượng lỗ bu lông
+BOLT_HOLE_D = 27.0       # Đường kính lỗ bu lông
+
+# Khởi tạo và xây dựng mô hình khối thân máy nghiền bi
+mill_drum = (
+    cq.Workplane("XY")
+    # Bước 1: Tạo hình trụ đặc cho thân máy nghiền
+    .cylinder(height=SHELL_LEN, radius=SHELL_OD/2)
+    .faces(">Z or <Z")
+    # Bước 2: Đùn khối để tạo các mặt bích ở cả hai đầu
+    .circle(FLANGE_OD/2).extrude(FLANGE_THICK, combine=True)
+    # Bước 3: Khoét rỗng ruột bên trong (tạo buồng nghiền chứa bi)
+    .faces(">Z").hole(SHELL_ID/2, depth=SHELL_LEN + 2 * FLANGE_THICK)
+    # Bước 4: Tạo mảng lỗ bu lông tròn trên mặt bích
+    .faces(">Z")
+    .workplane()
+    .polarArray(radius=BOLT_CIRCLE_D/2, angle=0, count=NUM_BOLTS, fill=True)
+    .hole(BOLT_HOLE_D/2)
+)
+
+# Xuất mô hình khối ra định dạng STEP chuẩn công nghiệp để đưa vào sản xuất
+cq.exporters.export(mill_drum, "ball_mill_drum.step")
+```
+
+---
+
+## 4. Vòng Lặp Phản Hồi Tự Sửa Lỗi (Closed-Loop Verification - Cực Kỳ Quan Trọng)
+
+Chìa khóa để một hệ thống AI đạt cấp độ sản xuất công nghiệp chính là khả năng **Tự Sửa Lỗi (Self-Correction)**. Chúng tôi triển khai một vòng lặp kiểm tra tích hợp liên tục cho đầu ra CAD:
+
+```
+[Mã nguồn của Agent] ──> [Biên dịch STEP 3D] ──> [Chiếu hình 2D dạng SVG] ──> [Đối chiếu trực quan] ──┐
+         ▲                                                                                          │
+         └─────────────────────── [Phản hồi sửa lỗi & Tối ưu hóa tham số] ──────────────────────────┘
+```
+
+1. **Chiếu ngược 3D sang 2D (Re-Projection)**: Tệp `ball_mill_drum.step` vừa được tạo ra sẽ được nạp trực tiếp vào một bộ công cụ chiếu ngược 3D-sang-2D (sử dụng chính đoạn mã tương tự như `step_to_2d_pdf.py` của bạn tận dụng nhân TechDraw của FreeCAD hoặc python-occ). Quá trình này sẽ tạo ra các hình chiếu vector 2D hoàn chỉnh (Hình chiếu đứng, hình chiếu bằng, mặt cắt).
+2. **So khớp Hình ảnh & Cấu trúc (Visual & Topological Comparison)**:
+   - **Đo khoảng cách cạnh (Edge Chamfer Distance)**: So sánh chính xác từng đường biên dạng của bản vẽ kỹ thuật gốc với biên dạng của hình chiếu được kết xuất từ mô hình 3D.
+   - **Intersection over Union (IoU)**: Đánh giá tỷ lệ trùng khớp của các vùng diện tích mặt cắt.
+   - **Kiểm tra ràng buộc kích thước (Constraint Solver)**: Truy vấn thông tin hình học của vật thể 3D thông qua nhân CadQuery để đảm bảo các giá trị đo thực tế khớp hoàn hảo với dữ liệu JSON kích thước ban đầu.
+3. **Tối ưu hóa tham số hình học**:
+   - Nếu khoảng cách cạnh lớn hơn dung sai cho phép (ví dụ: đường kính ngõng trục bị lệch do OCR đọc nhầm tỉ lệ), hệ thống **Tối ưu hóa (như thuật toán CMA-ES hoặc Bayesian Optimization)** hoặc chính **AI Agent** sẽ tự sửa lại các biến số tham số trong file Python.
+   - Vòng lặp này sẽ chạy tự động cho đến khi tỷ lệ trùng khớp của hình chiếu đạt độ chính xác $> 99\%$.
+
+---
+
+## 5. Danh Mục Công Nghệ & Thư Viện Khuyến Nghị
+
+Để triển khai hệ thống này một cách chuyên nghiệp nhất, bạn nên sử dụng các thư viện và hệ thống sau:
+
+| Giai đoạn Pipeline | Nhiệm vụ chi tiết | Công nghệ khuyến nghị |
+| :--- | :--- | :--- |
+| **Đầu vào (Ingestion)** | Đọc tệp PDF, chuẩn hóa DPI, trích xuất ảnh quét | `PyMuPDF (fitz)`, `pdfplumber`, `Ghostscript` |
+| **Thị giác Máy tính** | Phát hiện vùng góc nhìn, cắt mặt cắt, định vị điểm neo | `YOLOv10` (Ultralytics), `OpenCV`, `scikit-image` |
+| **OCR & NLP** | Đọc kích thước chữ số, ký hiệu ren, góc, dung sai | `PaddleOCR`, `Tesseract`, `LayoutLMv3`, `GPT-4o / Gemini 1.5 Pro` |
+| **Vector hóa** | Chuyển đổi các điểm ảnh nét vẽ thành các đoạn thẳng toán học | `Potrace`, `ezdxf`, thuật toán làm mảnh và khớp đường cong RANSAC |
+| **Nhân CAD Core** | Thiết kế hình học khối, các phép toán Boolean B-Rep, xuất STEP | `CadQuery 2.0` (dựa trên nền tảng nhân mạnh mẽ OpenCascade) |
+| **Nhân Chiếu 2D** | Chiếu mô hình 3D khối thành bản vẽ kỹ thuật 2D dạng SVG | `FreeCAD TechDraw API` hoặc các module chiếu của `python-occ` |
+| **Hệ thống AI Agent** | Điều phối việc sinh mã nguồn CAD và tự sửa lỗi | LangGraph (điều phối đa agent), LLaMA-3.1-405B / Gemini 1.5 Pro |
+
+---
+
+## 6. Lộ Trình Phát Triển Chi Tiết (Roadmap)
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ PHÂN ĐOẠN 1: Bản thử nghiệm MVP lai (Cốt lõi dựa trên Luật & Tham số)   │
+│ └─ Tái tạo vỏ tang quay chính và các mặt bích bằng CV hình học cổ điển. │
+├────────────────────────────────────────────────────────────────────────┤
+│ PHÂN ĐOẠN 2: Nhận diện OCR Ngữ nghĩa & Lắp ráp Cấu trúc                │
+│ └─ AI tự động đọc kích thước, dựng tấm lót bên trong, bánh răng truyền.│
+├────────────────────────────────────────────────────────────────────────┤
+│ PHÂN ĐOẠN 3: Hoàn thiện Agent Khép kín & Vòng lặp Kiểm tra             │
+│ └─ Hệ thống tự động biên dịch, chiếu hình đối chiếu và tự tối ưu hóa.  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Phân đoạn 1: Xây dựng bản thử nghiệm MVP (Mẫu tham số + Phép xoay tròn) - 3 Tháng
+*Tập trung vào cấu trúc cơ bản lớn nhất của Máy nghiền bi (thân tang quay hình trụ và hai ngõng trục đỡ ở hai đầu).*
+- Viết thư viện Python phát hiện trục đối xứng chính trong bản vẽ 2D.
+- Trích xuất biên dạng nửa trên của máy nghiền từ mặt cắt 2D và sử dụng **phép xoay tròn (revolve)** để tạo ra thân máy 3D cơ bản.
+- Ánh xạ tự động các mặt bích đầu trục và các lỗ bu lông chính.
+
+### Phân đoạn 2: Trích xuất Ngữ nghĩa Bản vẽ bằng AI - 4 Tháng
+*Tích hợp học sâu để tự động hóa việc đọc bản vẽ.*
+- Tinh chỉnh mô hình YOLO phát hiện các chi tiết chú thích nhỏ và các bộ phận phụ trợ (bánh răng truyền động, gối đỡ vòng bi, cửa nạp liệu, cửa xả liệu).
+- Xây dựng một thư viện các Chi tiết Cơ khí Tiêu chuẩn để hệ thống có thể lấy trực tiếp (ví dụ: các loại bu lông tiêu chuẩn, các gối đỡ) thay vì tự vẽ lại từ đầu.
+- Huấn luyện công cụ OCR nhận diện và gán đúng kích thước vào thực thể hình học tương ứng trên bản vẽ.
+
+### Phân đoạn 3: Hoàn thiện AI CAD Agent & Vòng Lặp Phản Hồi Tự Sửa Lỗi - 5 Tháng
+*Tự động hóa hoàn toàn quy trình và tích hợp sửa lỗi.*
+- Kết nối chặt chẽ AI Agent tạo mã CadQuery với vòng lặp phản hồi **chiếu ngược 3D sang 2D**.
+- Triển khai thuật toán so khớp trực quan (Visual Matcher) để tính toán sai số và tự sửa tham số.
+- Thiết kế giao diện UI cho người dùng để so sánh trực tiếp bản vẽ gốc 2D và mô hình khối 3D được tạo ra, cho phép người dùng nhấp đúp để sửa nhanh kích thước nếu AI nhận diện sai.
+
+---
+> [!NOTE]
+> **Tại sao nền tảng hiện tại của bạn là cực kỳ lý tưởng**:
+> Script `step_to_2d_pdf.py` bạn đang viết tận dụng tính năng của FreeCAD 1.1 để đọc tệp 3D (STEP) và chiếu ngược lại thành các hình chiếu vector 2D (Top, Front, Right) để ghi vào PDF. Đây chính xác là **Module 4 (Vòng lặp Kiểm tra)** trong hệ thống đề xuất của chúng tôi. Bạn đã có sẵn công cụ để đo đạc và chấm điểm độ chính xác của mô hình 3D được tạo ra! Nhiệm vụ tiếp theo chỉ là xây dựng các Module 1, 2 và 3 để đảo ngược quy trình và hoàn tất vòng lặp thông minh này.
